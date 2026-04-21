@@ -2,45 +2,37 @@ import { create } from "zustand";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
 import { AgentWithStatus, ScanResult } from "@/types";
 
-const BROWSER_FIXTURE_AGENTS: AgentWithStatus[] = [
-  {
-    id: "claude-code",
-    display_name: "Claude Code",
-    category: "coding",
-    global_skills_dir: "~/.claude/skills/",
-    is_detected: true,
-    is_builtin: true,
-    is_enabled: true,
-  },
-  {
-    id: "cursor",
-    display_name: "Cursor",
-    category: "coding",
-    global_skills_dir: "~/.cursor/skills/",
-    is_detected: true,
-    is_builtin: true,
-    is_enabled: true,
-  },
-  {
-    id: "central",
-    display_name: "Central Skills",
-    category: "central",
-    global_skills_dir: "~/.agents/skills/",
-    is_detected: true,
-    is_builtin: true,
-    is_enabled: true,
-  },
-];
+// ─── Web mode API helpers ──────────────────────────────────────────────────────
+// When running in browser (not Tauri), call the backend API via Vite proxy.
 
-const BROWSER_FIXTURE_COUNTS: ScanResult = {
-  total_skills: 1,
-  agents_scanned: 3,
-  skills_by_agent: {
-    "claude-code": 1,
-    cursor: 1,
-    central: 1,
-  },
-};
+async function webGetAgents(): Promise<AgentWithStatus[]> {
+  const res = await fetch("/api/agents");
+  return res.json();
+}
+
+async function webScanAll(): Promise<ScanResult> {
+  const res = await fetch("/api/scan", { method: "POST" });
+  return res.json();
+}
+
+async function loadAgentsAndScan(): Promise<{
+  agents: AgentWithStatus[];
+  scanResult: ScanResult;
+}> {
+  if (isTauriRuntime()) {
+    const [agents, scanResult] = await Promise.all([
+      invoke<AgentWithStatus[]>("get_agents"),
+      invoke<ScanResult>("scan_all_skills"),
+    ]);
+    return { agents, scanResult };
+  }
+  // Web mode — call backend API
+  const [agents, scanResult] = await Promise.all([
+    webGetAgents(),
+    webScanAll(),
+  ]);
+  return { agents, scanResult };
+}
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -72,19 +64,8 @@ export const usePlatformStore = create<PlatformState>((set) => ({
    */
   initialize: async () => {
     set({ isLoading: true, error: null });
-    if (!isTauriRuntime()) {
-      set({
-        agents: BROWSER_FIXTURE_AGENTS,
-        skillsByAgent: BROWSER_FIXTURE_COUNTS.skills_by_agent,
-        isLoading: false,
-      });
-      return;
-    }
     try {
-      const [agents, scanResult] = await Promise.all([
-        invoke<AgentWithStatus[]>("get_agents"),
-        invoke<ScanResult>("scan_all_skills"),
-      ]);
+      const { agents, scanResult } = await loadAgentsAndScan();
       set({
         agents,
         skillsByAgent: scanResult.skills_by_agent,
@@ -101,19 +82,8 @@ export const usePlatformStore = create<PlatformState>((set) => ({
    */
   rescan: async () => {
     set({ isLoading: true, error: null });
-    if (!isTauriRuntime()) {
-      set({
-        agents: BROWSER_FIXTURE_AGENTS,
-        skillsByAgent: BROWSER_FIXTURE_COUNTS.skills_by_agent,
-        isLoading: false,
-      });
-      return;
-    }
     try {
-      const [agents, scanResult] = await Promise.all([
-        invoke<AgentWithStatus[]>("get_agents"),
-        invoke<ScanResult>("scan_all_skills"),
-      ]);
+      const { agents, scanResult } = await loadAgentsAndScan();
       set({
         agents,
         skillsByAgent: scanResult.skills_by_agent,
@@ -126,20 +96,8 @@ export const usePlatformStore = create<PlatformState>((set) => ({
 
   refreshCounts: async () => {
     set({ isRefreshing: true, error: null });
-    if (!isTauriRuntime()) {
-      set((state) => ({
-        agents: BROWSER_FIXTURE_AGENTS,
-        skillsByAgent: BROWSER_FIXTURE_COUNTS.skills_by_agent,
-        isRefreshing: false,
-        isLoading: state.isLoading,
-      }));
-      return;
-    }
     try {
-      const [agents, scanResult] = await Promise.all([
-        invoke<AgentWithStatus[]>("get_agents"),
-        invoke<ScanResult>("scan_all_skills"),
-      ]);
+      const { agents, scanResult } = await loadAgentsAndScan();
       set((state) => ({
         agents,
         skillsByAgent: scanResult.skills_by_agent,

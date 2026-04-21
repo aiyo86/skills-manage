@@ -2,49 +2,48 @@ import { create } from "zustand";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
 import { AgentWithStatus, BatchInstallResult, SkillWithLinks } from "@/types";
 
-export const BROWSER_FIXTURE_AGENTS: AgentWithStatus[] = [
-  {
-    id: "claude-code",
-    display_name: "Claude Code",
-    category: "coding",
-    global_skills_dir: "~/.claude/skills/",
-    is_detected: true,
-    is_builtin: true,
-    is_enabled: true,
-  },
-  {
-    id: "cursor",
-    display_name: "Cursor",
-    category: "coding",
-    global_skills_dir: "~/.cursor/skills/",
-    is_detected: true,
-    is_builtin: true,
-    is_enabled: true,
-  },
-  {
-    id: "central",
-    display_name: "Central Skills",
-    category: "central",
-    global_skills_dir: "~/.agents/skills/",
-    is_detected: true,
-    is_builtin: true,
-    is_enabled: true,
-  },
-];
+// ─── Web mode API helpers ──────────────────────────────────────────────────────
 
-export const BROWSER_FIXTURE_SKILLS: SkillWithLinks[] = [
-  {
-    id: "fixture-central-skill",
-    name: "fixture-central-skill",
-    description: "Browser validation fixture for Central and drawer entry flows.",
-    file_path: "~/.agents/skills/fixture-central-skill/SKILL.md",
-    canonical_path: "~/.agents/skills/fixture-central-skill",
+async function webGetAgents(): Promise<AgentWithStatus[]> {
+  const res = await fetch("/api/agents");
+  return res.json();
+}
+
+async function webGetCentralSkills(): Promise<SkillWithLinks[]> {
+  const res = await fetch("/api/skills/codex");
+  const raw = await res.json();
+  // Map ScannedSkill[] → SkillWithLinks[] for the central view
+  return (raw ?? []).map((s: any) => ({
+    id: s.id,
+    name: s.name,
+    description: s.description ?? null,
+    file_path: s.file_path,
+    canonical_path: s.dir_path,
     is_central: true,
-    source: "browser-fixture",
-    scanned_at: "2026-04-17T00:00:00.000Z",
-    linked_agents: ["claude-code"],
-  },
-];
+    source: s.link_type ?? "native",
+    scanned_at: new Date().toISOString(),
+    linked_agents: [], // link info not available in simple API
+  }));
+}
+
+async function loadCentralSkillsAndAgents(): Promise<{
+  skills: SkillWithLinks[];
+  agents: AgentWithStatus[];
+}> {
+  if (isTauriRuntime()) {
+    const [skills, agents] = await Promise.all([
+      invoke<SkillWithLinks[]>("get_central_skills"),
+      invoke<AgentWithStatus[]>("get_agents"),
+    ]);
+    return { skills: skills ?? [], agents: agents ?? [] };
+  }
+  // Web mode
+  const [skills, agents] = await Promise.all([
+    webGetCentralSkills(),
+    webGetAgents(),
+  ]);
+  return { skills, agents };
+}
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -83,20 +82,9 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
    */
   loadCentralSkills: async () => {
     set({ isLoading: true, error: null });
-    if (!isTauriRuntime()) {
-      set({
-        skills: BROWSER_FIXTURE_SKILLS,
-        agents: BROWSER_FIXTURE_AGENTS,
-        isLoading: false,
-      });
-      return;
-    }
     try {
-      const [skills, agents] = await Promise.all([
-        invoke<SkillWithLinks[]>("get_central_skills"),
-        invoke<AgentWithStatus[]>("get_agents"),
-      ]);
-      set({ skills: skills ?? [], agents: agents ?? [], isLoading: false });
+      const { skills, agents } = await loadCentralSkillsAndAgents();
+      set({ skills, agents, isLoading: false });
     } catch (err) {
       set({ error: String(err), isLoading: false });
     }

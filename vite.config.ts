@@ -22,16 +22,23 @@ export default defineConfig(async () => ({
   clearScreen: false,
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
-    port: 24200,
-    strictPort: true,
-    host: host || false,
-    hmr: host
-      ? {
-          protocol: "ws",
-          host,
-          port: 24201,
-        }
-      : undefined,
+    port: 8888, // 使用可从外网访问的端口
+    strictPort: false, // 允许使用其他端口如果8888被占用
+    host: "0.0.0.0", // 允许外网访问
+    hmr: {
+      protocol: "ws",
+      host: "0.0.0.0",
+      port: 8889,
+    },
+    proxy: {
+      // 代理 API 请求到我们的 API 服务器
+      '/api': {
+        target: 'http://localhost:8891',
+        changeOrigin: true,
+        secure: false,
+        rewrite: (path) => path,
+      },
+    },
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],

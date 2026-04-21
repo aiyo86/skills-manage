@@ -259,7 +259,14 @@ export function SkillDetailView({
     if (!filePath) return;
     setFileIsLoading(true);
     try {
-      const text = await invoke<string>("read_file_by_path", { path: filePath });
+      let text: string;
+      if (isTauriRuntime()) {
+        text = await invoke<string>("read_file_by_path", { path: filePath });
+      } else {
+        const res = await fetch(`/api/read-file?path=${encodeURIComponent(filePath)}`);
+        if (!res.ok) throw new Error(res.statusText);
+        text = await res.text();
+      }
       setFileContent(text);
     } catch {
       setFileContent(null);

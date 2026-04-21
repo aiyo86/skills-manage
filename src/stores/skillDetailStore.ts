@@ -7,6 +7,42 @@ import {
   setupExplanationStreamListeners,
 } from "@/lib/explanationStream";
 
+// ─── Web mode API helpers ──────────────────────────────────────────────────────
+
+async function webGetSkillDetail(skillId: string): Promise<SkillDetail> {
+  const res = await fetch(`/api/skill-detail/${encodeURIComponent(skillId)}`);
+  if (!res.ok) throw new Error(`Failed to load skill detail: ${res.statusText}`);
+  return res.json();
+}
+
+async function webGetSkillContent(skillId: string): Promise<string> {
+  const res = await fetch(`/api/skill-content/${encodeURIComponent(skillId)}`);
+  if (!res.ok) throw new Error(`Failed to load skill content: ${res.statusText}`);
+  return res.text();
+}
+
+interface ExplainResponse {
+  explanation?: string;
+  explanationError?: string;
+}
+
+async function webExplainSkill(skillId: string, content: string, lang: string): Promise<string> {
+  const res = await fetch('/api/explain-skill', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ skillId, content, lang }),
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.explanationError || errorData.error || `Failed to generate explanation: ${res.statusText}`);
+  }
+  const data: ExplainResponse = await res.json();
+  if (!data.explanation) {
+    throw new Error(data.explanationError || 'No explanation returned');
+  }
+  return data.explanation;
+}
+
 // ─── State ────────────────────────────────────────────────────────────────────
 
 interface SkillDetailState {
@@ -150,20 +186,22 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
    */
   loadDetail: async (skillId: string) => {
     set({ isLoading: true, error: null });
-    if (!isTauriRuntime()) {
-      set({
-        detail: null,
-        content: null,
-        isLoading: false,
-        error: null,
-      });
-      return;
-    }
     try {
-      const [detail, content] = await Promise.all([
-        invoke<SkillDetail>("get_skill_detail", { skillId }),
-        invoke<string>("read_skill_content", { skillId }),
-      ]);
+      let detail: SkillDetail;
+      let content: string;
+
+      if (isTauriRuntime()) {
+        [detail, content] = await Promise.all([
+          invoke<SkillDetail>("get_skill_detail", { skillId }),
+          invoke<string>("read_skill_content", { skillId }),
+        ]);
+      } else {
+        [detail, content] = await Promise.all([
+          webGetSkillDetail(skillId),
+          webGetSkillContent(skillId),
+        ]);
+      }
+
       set({ detail, content, isLoading: false });
     } catch (err) {
       set({ error: String(err), isLoading: false });
@@ -199,19 +237,22 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
 
   generateExplanation: async (skillId: string, content: string, lang: string) => {
     const requestId = startExplanationRequest(set);
-    if (!isTauriRuntime()) {
-      set({
-        explanation: null,
-        isExplanationLoading: false,
-        isExplanationStreaming: false,
-        explanationError: "AI explanation requires the Tauri desktop runtime.",
-        explanationErrorInfo: null,
-      });
-      return;
-    }
     try {
-      await setupExplanationListeners(skillId, requestId, set);
-      await invoke("explain_skill_stream", { skillId, content, lang });
+      if (isTauriRuntime()) {
+        await setupExplanationListeners(skillId, requestId, set);
+        await invoke("explain_skill_stream", { skillId, content, lang });
+      } else {
+        // Web mode: call API directly (non-streaming)
+        const explanation = await webExplainSkill(skillId, content, lang);
+        if (requestId !== activeExplanationRequestId) return;
+        set({
+          explanation,
+          isExplanationLoading: false,
+          isExplanationStreaming: false,
+          explanationError: null,
+          explanationErrorInfo: null,
+        });
+      }
     } catch (err) {
       failExplanationRequest(requestId, err, set);
     }
@@ -219,19 +260,22 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
 
   refreshExplanation: async (skillId: string, content: string, lang: string) => {
     const requestId = startExplanationRequest(set);
-    if (!isTauriRuntime()) {
-      set({
-        explanation: null,
-        isExplanationLoading: false,
-        isExplanationStreaming: false,
-        explanationError: "AI explanation requires the Tauri desktop runtime.",
-        explanationErrorInfo: null,
-      });
-      return;
-    }
     try {
-      await setupExplanationListeners(skillId, requestId, set);
-      await invoke("refresh_skill_explanation", { skillId, content, lang });
+      if (isTauriRuntime()) {
+        await setupExplanationListeners(skillId, requestId, set);
+        await invoke("refresh_skill_explanation", { skillId, content, lang });
+      } else {
+        // Web mode: call API directly (non-streaming)
+        const explanation = await webExplainSkill(skillId, content, lang);
+        if (requestId !== activeExplanationRequestId) return;
+        set({
+          explanation,
+          isExplanationLoading: false,
+          isExplanationStreaming: false,
+          explanationError: null,
+          explanationErrorInfo: null,
+        });
+      }
     } catch (err) {
       failExplanationRequest(requestId, err, set);
     }
@@ -243,21 +287,28 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
    */
   installSkill: async (skillId: string, agentId: string) => {
     set({ installingAgentId: agentId, error: null });
-    if (!isTauriRuntime()) {
-      set({
-        installingAgentId: null,
-        error: "Installing skills requires the Tauri desktop runtime.",
-      });
-      return;
-    }
     try {
-      await invoke("install_skill_to_agent", {
-        skillId,
-        agentId,
-        method: "symlink",
-      });
+      if (isTauriRuntime()) {
+        await invoke("install_skill_to_agent", {
+          skillId,
+          agentId,
+          method: "symlink",
+        });
+      } else {
+        const response = await fetch("/api/install-skill", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ skillId, agentId, method: "symlink" }),
+        });
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || "Failed to install skill");
+        }
+      }
       // Reload detail so the installations list reflects the new install.
-      const detail = await invoke<SkillDetail>("get_skill_detail", { skillId });
+      const detail = isTauriRuntime()
+        ? await invoke<SkillDetail>("get_skill_detail", { skillId })
+        : await webGetSkillDetail(skillId);
       set({ detail, installingAgentId: null });
     } catch (err) {
       set({ error: String(err), installingAgentId: null });
@@ -270,17 +321,24 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
    */
   uninstallSkill: async (skillId: string, agentId: string) => {
     set({ installingAgentId: agentId, error: null });
-    if (!isTauriRuntime()) {
-      set({
-        installingAgentId: null,
-        error: "Uninstalling skills requires the Tauri desktop runtime.",
-      });
-      return;
-    }
     try {
-      await invoke("uninstall_skill_from_agent", { skillId, agentId });
+      if (isTauriRuntime()) {
+        await invoke("uninstall_skill_from_agent", { skillId, agentId });
+      } else {
+        const response = await fetch("/api/uninstall-skill", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ skillId, agentId }),
+        });
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || "Failed to uninstall skill");
+        }
+      }
       // Reload detail so the installations list reflects the removal.
-      const detail = await invoke<SkillDetail>("get_skill_detail", { skillId });
+      const detail = isTauriRuntime()
+        ? await invoke<SkillDetail>("get_skill_detail", { skillId })
+        : await webGetSkillDetail(skillId);
       set({ detail, installingAgentId: null });
     } catch (err) {
       set({ error: String(err), installingAgentId: null });
@@ -288,11 +346,10 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
   },
 
   refreshInstallations: async (skillId: string) => {
-    if (!isTauriRuntime()) {
-      return;
-    }
     try {
-      const detail = await invoke<SkillDetail>("get_skill_detail", { skillId });
+      const detail = isTauriRuntime()
+        ? await invoke<SkillDetail>("get_skill_detail", { skillId })
+        : await webGetSkillDetail(skillId);
       set((state) => ({
         detail,
         content: state.content,
